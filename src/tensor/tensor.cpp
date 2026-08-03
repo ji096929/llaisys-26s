@@ -166,7 +166,7 @@ void Tensor::debug() const {
 bool Tensor::isContiguous() const {
     const auto &shape = _meta.shape;
     const auto &strides = _meta.strides;
-    size_t expected = 1;
+    ptrdiff_t expected = 1;
     for (size_t i = shape.size(); i-- > 0;) {
         if (strides[i] != expected) {
             return false;
