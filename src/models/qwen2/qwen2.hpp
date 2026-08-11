@@ -29,6 +29,9 @@ public:
 private:
     tensor_t create_tensor(const std::vector<size_t> &shape);
     llaisysTensor_t make_handle(tensor_t tensor);
+    tensor_t forward_layer(size_t layer, tensor_t hidden, const std::vector<int64_t> &pos_ids);
+    tensor_t forward(const int64_t *token_ids, size_t ntoken);
+    void append_cache(tensor_t cache, tensor_t new_kv, size_t offset);
 
     LlaisysQwen2Meta _meta;
     llaisysDeviceType_t _device;

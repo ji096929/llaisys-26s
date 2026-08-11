@@ -1,5 +1,5 @@
 import json
-from ctypes import byref, c_int
+from ctypes import byref, c_int, c_int64
 from pathlib import Path
 from typing import Sequence
 
@@ -11,7 +11,7 @@ from ..libllaisys.qwen2 import LlaisysQwen2Meta
 
 class Qwen2:
 
-    def __init__(self, model_path, device: DeviceType = DeviceType.CPU):
+    def __init__(self, model_path, device: DeviceType = DeviceType.CPU, nlayer: int = None):
         model_path = Path(model_path)
 
         # 1. 读 config.json，填 LlaisysQwen2Meta
@@ -20,7 +20,7 @@ class Qwen2:
 
         meta = LlaisysQwen2Meta()
         meta.dtype = int(DataType.BF16)
-        meta.nlayer = int(cfg["num_hidden_layers"])
+        meta.nlayer = int(cfg["num_hidden_layers"]) if nlayer is None else int(nlayer)
         meta.hs = int(cfg["hidden_size"])
         meta.nh = int(cfg["num_attention_heads"])
         meta.nkvh = int(cfg["num_key_value_heads"])
@@ -40,6 +40,8 @@ class Qwen2:
         if not self._model:
             raise RuntimeError("Failed to create Qwen2 model")
         self._weights = LIB_LLAISYS.llaisysQwen2ModelWeights(self._model).contents
+        self._nlayer = meta.nlayer
+        self._end_token = meta.end_token
 
         # 3. 遍历 safetensors，按名字映射 load 进 C++ 张量
         for file in sorted(model_path.glob("*.safetensors")):
@@ -48,7 +50,8 @@ class Qwen2:
                     tensor = data_.get_tensor(name)
                     handle = self._map_weight(name)
                     if handle is None:
-                        raise RuntimeError(f"Unknown weight name: {name}")
+                        # 单层验证模式（nlayer 截断）下，未创建层级的权重直接跳过
+                        continue
                     LIB_LLAISYS.tensorLoad(handle, tensor.data_ptr())
 
     def __del__(self):
@@ -69,6 +72,8 @@ class Qwen2:
         parts = name.split(".")
         if len(parts) >= 4 and parts[0] == "model" and parts[1] == "layers":
             layer = int(parts[2])
+            if layer >= self._nlayer:
+                return None
             sub = parts[3]
             if sub == "input_layernorm":
                 return w.attn_norm_w[layer]
@@ -103,5 +108,22 @@ class Qwen2:
         top_p: float = 0.8,
         temperature: float = 0.8,
     ):
-        # TODO: 阶段 7 实现生成循环
-        return []
+        # 测试要求纯 argmax 采样，top_k/top_p/temperature 参数暂不参与计算
+        if max_new_tokens is None:
+            max_new_tokens = 128
+
+        token_ids = [int(t) for t in inputs]
+        result = list(token_ids)
+
+        for _ in range(int(max_new_tokens)):
+            arr = (c_int64 * len(token_ids))(*token_ids)
+            next_token = int(
+                LIB_LLAISYS.llaisysQwen2ModelInfer(self._model, arr, len(token_ids))
+            )
+            if next_token == self._end_token:
+                break
+            result.append(next_token)
+            # 增量生成：只喂新 token，历史 k/v 已缓存在 C++ 侧
+            token_ids = [next_token]
+
+        return result

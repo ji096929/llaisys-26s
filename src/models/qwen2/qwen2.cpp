@@ -2,8 +2,50 @@
 
 #include "../../utils.hpp"
 
+#include "../../ops/embedding/op.hpp"
+#include "../../ops/linear/op.hpp"
+#include "../../ops/rms_norm/op.hpp"
+#include "../../ops/rope/op.hpp"
+#include "../../ops/self_attention/op.hpp"
+#include "../../ops/swiglu/op.hpp"
+#include "../../ops/add/op.hpp"
+
+#include <cmath>
+#include <limits>
+
 namespace llaisys {
 namespace model {
+namespace {
+
+template <typename T>
+int64_t argmax_last(const std::byte *data, size_t size) {
+    const T *p = reinterpret_cast<const T *>(data);
+    int64_t best = 0;
+    float best_v = -std::numeric_limits<float>::infinity();
+    for (size_t j = 0; j < size; j++) {
+        float v = llaisys::utils::cast<float>(p[j]);
+        if (v > best_v) {
+            best_v = v;
+            best = static_cast<int64_t>(j);
+        }
+    }
+    return best;
+}
+
+int64_t argmax_logits(const std::byte *data, llaisysDataType_t dtype, size_t size) {
+    switch (dtype) {
+    case LLAISYS_DTYPE_F32:
+        return argmax_last<float>(data, size);
+    case LLAISYS_DTYPE_BF16:
+        return argmax_last<llaisys::bf16_t>(data, size);
+    case LLAISYS_DTYPE_F16:
+        return argmax_last<llaisys::fp16_t>(data, size);
+    default:
+        EXCEPTION_UNSUPPORTED_DATATYPE(dtype);
+    }
+}
+
+} // namespace
 
 Qwen2Model::Qwen2Model(const LlaisysQwen2Meta &meta, llaisysDeviceType_t device, int device_id)
     : _meta(meta), _device(device), _device_id(device_id) {
@@ -81,9 +123,119 @@ llaisysTensor_t Qwen2Model::make_handle(tensor_t tensor) {
 }
 
 int64_t Qwen2Model::infer(const int64_t *token_ids, size_t ntoken) {
-    // TODO: 阶段 6 实现完整前向
-    TO_BE_IMPLEMENTED();
-    return _meta.end_token;
+    auto logits = forward(token_ids, ntoken);
+    // 只需要最后一个 token 的 logits
+    auto last_logits = logits->slice(0, ntoken - 1, ntoken);
+    return argmax_logits(last_logits->data(), _meta.dtype, _meta.voc);
+}
+
+tensor_t Qwen2Model::forward(const int64_t *token_ids, size_t ntoken) {
+    size_t hs = _meta.hs;
+
+    // token ids 张量
+    auto ids = Tensor::create({ntoken}, LLAISYS_DTYPE_I64, _device, _device_id);
+    ids->load(token_ids);
+
+    // embedding
+    auto hidden = create_tensor({ntoken, hs});
+    ops::embedding(hidden, ids, _weights.in_embed->tensor);
+
+    // 位置从当前缓存长度开始（所有层同步）
+    size_t base = _cache_len.empty() ? 0 : _cache_len[0];
+    std::vector<int64_t> pos_ids(ntoken);
+    for (size_t t = 0; t < ntoken; t++) {
+        pos_ids[t] = static_cast<int64_t>(base + t);
+    }
+
+    for (size_t i = 0; i < _meta.nlayer; i++) {
+        hidden = forward_layer(i, hidden, pos_ids);
+    }
+
+    // 最终 RMSNorm + lm_head
+    auto h_norm = create_tensor({ntoken, hs});
+    ops::rms_norm(h_norm, hidden, _weights.out_norm_w->tensor, _meta.epsilon);
+
+    auto logits = create_tensor({ntoken, _meta.voc});
+    ops::linear(logits, h_norm, _weights.out_embed->tensor, nullptr);
+
+    return logits;
+}
+
+tensor_t Qwen2Model::forward_layer(size_t layer, tensor_t hidden,
+                                   const std::vector<int64_t> &pos_ids) {
+    size_t ntoken = pos_ids.size();
+    size_t hs = _meta.hs;
+    size_t nh = _meta.nh;
+    size_t nkvh = _meta.nkvh;
+    size_t dh = _meta.dh;
+    size_t di = _meta.di;
+    float eps = _meta.epsilon;
+    float theta = _meta.theta;
+
+    // 1. 注意力前的 RMSNorm
+    auto h_norm = create_tensor({ntoken, hs});
+    ops::rms_norm(h_norm, hidden, _weights.attn_norm_w[layer]->tensor, eps);
+
+    // 2. q/k/v 投影
+    auto q = create_tensor({ntoken, nh * dh});
+    auto k = create_tensor({ntoken, nkvh * dh});
+    auto v = create_tensor({ntoken, nkvh * dh});
+    ops::linear(q, h_norm, _weights.attn_q_w[layer]->tensor, _weights.attn_q_b[layer]->tensor);
+    ops::linear(k, h_norm, _weights.attn_k_w[layer]->tensor, _weights.attn_k_b[layer]->tensor);
+    ops::linear(v, h_norm, _weights.attn_v_w[layer]->tensor, _weights.attn_v_b[layer]->tensor);
+
+    // 3. reshape 成 3D 并做 RoPE
+    auto q3 = q->view({ntoken, nh, dh});
+    auto k3 = k->view({ntoken, nkvh, dh});
+    auto v3 = v->view({ntoken, nkvh, dh});
+    auto pos_t = Tensor::create({ntoken}, LLAISYS_DTYPE_I64, _device, _device_id);
+    pos_t->load(pos_ids.data());
+    ops::rope(q3, q3, pos_t, theta);
+    ops::rope(k3, k3, pos_t, theta);
+
+    // 4. 新 k/v 追加进缓存
+    size_t cur = _cache_len[layer];
+    append_cache(_k_cache[layer], k3, cur);
+    append_cache(_v_cache[layer], v3, cur);
+    _cache_len[layer] = cur + ntoken;
+
+    // 5. attention（用缓存里的全部历史 k/v）
+    size_t kvlen = cur + ntoken;
+    auto k_all = _k_cache[layer]->slice(0, 0, kvlen);
+    auto v_all = _v_cache[layer]->slice(0, 0, kvlen);
+    auto attn = create_tensor({ntoken, nh, dh});
+    float scale = 1.0f / std::sqrt(static_cast<float>(dh));
+    ops::self_attention(attn, q3, k_all, v_all, scale);
+
+    // 6. o 投影 + 残差
+    auto attn2 = attn->view({ntoken, nh * dh});
+    auto o = create_tensor({ntoken, hs});
+    ops::linear(o, attn2, _weights.attn_o_w[layer]->tensor, nullptr);
+    ops::add(hidden, hidden, o);
+
+    // 7. MLP
+    auto h_mlp = create_tensor({ntoken, hs});
+    ops::rms_norm(h_mlp, hidden, _weights.mlp_norm_w[layer]->tensor, eps);
+
+    auto gate = create_tensor({ntoken, di});
+    auto up = create_tensor({ntoken, di});
+    ops::linear(gate, h_mlp, _weights.mlp_gate_w[layer]->tensor, nullptr);
+    ops::linear(up, h_mlp, _weights.mlp_up_w[layer]->tensor, nullptr);
+
+    auto mlp_out = create_tensor({ntoken, di});
+    ops::swiglu(mlp_out, gate, up);
+
+    auto down = create_tensor({ntoken, hs});
+    ops::linear(down, mlp_out, _weights.mlp_down_w[layer]->tensor, nullptr);
+    ops::add(hidden, hidden, down);
+
+    return hidden;
+}
+
+void Qwen2Model::append_cache(tensor_t cache, tensor_t new_kv, size_t offset) {
+    size_t ntoken = new_kv->shape()[0];
+    auto dst = cache->slice(0, offset, offset + ntoken);
+    dst->load(new_kv->data());
 }
 
 } // namespace model
