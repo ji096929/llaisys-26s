@@ -2,6 +2,7 @@
 #include "../../../utils.hpp"
 
 #include <cmath>
+#include <cstring>
 
 template <typename T>
 void embedding_(T *out, const int64_t *index, const T *embd, size_t rows, size_t cols) {
