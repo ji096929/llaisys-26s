@@ -116,6 +116,20 @@ tensor_t Qwen2Model::create_tensor(const std::vector<size_t> &shape) {
     return Tensor::create(shape, _meta.dtype, _device, _device_id);
 }
 
+tensor_t Qwen2Model::buffer(tensor_t &slot, const std::vector<size_t> &shape) {
+    if (!slot || slot->shape() != shape) {
+        slot = create_tensor(shape);
+    }
+    return slot;
+}
+
+tensor_t Qwen2Model::int_buffer(tensor_t &slot, size_t n) {
+    if (!slot || slot->numel() != n) {
+        slot = Tensor::create({n}, LLAISYS_DTYPE_I64, _device, _device_id);
+    }
+    return slot;
+}
+
 llaisysTensor_t Qwen2Model::make_handle(tensor_t tensor) {
     auto handle = std::make_shared<LlaisysTensor>(LlaisysTensor{tensor});
     _owned.push_back(handle);
@@ -133,11 +147,11 @@ tensor_t Qwen2Model::forward(const int64_t *token_ids, size_t ntoken) {
     size_t hs = _meta.hs;
 
     // token ids 张量
-    auto ids = Tensor::create({ntoken}, LLAISYS_DTYPE_I64, _device, _device_id);
+    auto ids = int_buffer(_buf_ids, ntoken);
     ids->load(token_ids);
 
     // embedding
-    auto hidden = create_tensor({ntoken, hs});
+    auto hidden = buffer(_buf_hidden, {ntoken, hs});
     ops::embedding(hidden, ids, _weights.in_embed->tensor);
 
     // 位置从当前缓存长度开始（所有层同步）
@@ -152,10 +166,10 @@ tensor_t Qwen2Model::forward(const int64_t *token_ids, size_t ntoken) {
     }
 
     // 最终 RMSNorm + lm_head
-    auto h_norm = create_tensor({ntoken, hs});
+    auto h_norm = buffer(_buf_h_norm, {ntoken, hs});
     ops::rms_norm(h_norm, hidden, _weights.out_norm_w->tensor, _meta.epsilon);
 
-    auto logits = create_tensor({ntoken, _meta.voc});
+    auto logits = buffer(_buf_logits, {ntoken, _meta.voc});
     ops::linear(logits, h_norm, _weights.out_embed->tensor, nullptr);
 
     return logits;
@@ -173,13 +187,13 @@ tensor_t Qwen2Model::forward_layer(size_t layer, tensor_t hidden,
     float theta = _meta.theta;
 
     // 1. 注意力前的 RMSNorm
-    auto h_norm = create_tensor({ntoken, hs});
+    auto h_norm = buffer(_buf_h_norm, {ntoken, hs});
     ops::rms_norm(h_norm, hidden, _weights.attn_norm_w[layer]->tensor, eps);
 
     // 2. q/k/v 投影
-    auto q = create_tensor({ntoken, nh * dh});
-    auto k = create_tensor({ntoken, nkvh * dh});
-    auto v = create_tensor({ntoken, nkvh * dh});
+    auto q = buffer(_buf_q, {ntoken, nh * dh});
+    auto k = buffer(_buf_k, {ntoken, nkvh * dh});
+    auto v = buffer(_buf_v, {ntoken, nkvh * dh});
     ops::linear(q, h_norm, _weights.attn_q_w[layer]->tensor, _weights.attn_q_b[layer]->tensor);
     ops::linear(k, h_norm, _weights.attn_k_w[layer]->tensor, _weights.attn_k_b[layer]->tensor);
     ops::linear(v, h_norm, _weights.attn_v_w[layer]->tensor, _weights.attn_v_b[layer]->tensor);
@@ -188,7 +202,7 @@ tensor_t Qwen2Model::forward_layer(size_t layer, tensor_t hidden,
     auto q3 = q->view({ntoken, nh, dh});
     auto k3 = k->view({ntoken, nkvh, dh});
     auto v3 = v->view({ntoken, nkvh, dh});
-    auto pos_t = Tensor::create({ntoken}, LLAISYS_DTYPE_I64, _device, _device_id);
+    auto pos_t = int_buffer(_buf_pos, ntoken);
     pos_t->load(pos_ids.data());
     ops::rope(q3, q3, pos_t, theta);
     ops::rope(k3, k3, pos_t, theta);
@@ -203,29 +217,29 @@ tensor_t Qwen2Model::forward_layer(size_t layer, tensor_t hidden,
     size_t kvlen = cur + ntoken;
     auto k_all = _k_cache[layer]->slice(0, 0, kvlen);
     auto v_all = _v_cache[layer]->slice(0, 0, kvlen);
-    auto attn = create_tensor({ntoken, nh, dh});
+    auto attn = buffer(_buf_attn, {ntoken, nh, dh});
     float scale = 1.0f / std::sqrt(static_cast<float>(dh));
     ops::self_attention(attn, q3, k_all, v_all, scale);
 
     // 6. o 投影 + 残差
     auto attn2 = attn->view({ntoken, nh * dh});
-    auto o = create_tensor({ntoken, hs});
+    auto o = buffer(_buf_o, {ntoken, hs});
     ops::linear(o, attn2, _weights.attn_o_w[layer]->tensor, nullptr);
     ops::add(hidden, hidden, o);
 
     // 7. MLP
-    auto h_mlp = create_tensor({ntoken, hs});
+    auto h_mlp = buffer(_buf_h_mlp, {ntoken, hs});
     ops::rms_norm(h_mlp, hidden, _weights.mlp_norm_w[layer]->tensor, eps);
 
-    auto gate = create_tensor({ntoken, di});
-    auto up = create_tensor({ntoken, di});
+    auto gate = buffer(_buf_gate, {ntoken, di});
+    auto up = buffer(_buf_up, {ntoken, di});
     ops::linear(gate, h_mlp, _weights.mlp_gate_w[layer]->tensor, nullptr);
     ops::linear(up, h_mlp, _weights.mlp_up_w[layer]->tensor, nullptr);
 
-    auto mlp_out = create_tensor({ntoken, di});
+    auto mlp_out = buffer(_buf_mlp_out, {ntoken, di});
     ops::swiglu(mlp_out, gate, up);
 
-    auto down = create_tensor({ntoken, hs});
+    auto down = buffer(_buf_down, {ntoken, hs});
     ops::linear(down, mlp_out, _weights.mlp_down_w[layer]->tensor, nullptr);
     ops::add(hidden, hidden, down);
 

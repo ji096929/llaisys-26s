@@ -29,6 +29,8 @@ public:
 private:
     tensor_t create_tensor(const std::vector<size_t> &shape);
     llaisysTensor_t make_handle(tensor_t tensor);
+    tensor_t buffer(tensor_t &slot, const std::vector<size_t> &shape);
+    tensor_t int_buffer(tensor_t &slot, size_t n);
     tensor_t forward_layer(size_t layer, tensor_t hidden, const std::vector<int64_t> &pos_ids);
     tensor_t forward(const int64_t *token_ids, size_t ntoken);
     void append_cache(tensor_t cache, tensor_t new_kv, size_t offset);
@@ -57,6 +59,23 @@ private:
     std::vector<tensor_t> _k_cache;
     std::vector<tensor_t> _v_cache;
     std::vector<size_t> _cache_len;
+
+    // 预分配缓冲区：跨层复用，按需扩容，避免每步每层分配
+    tensor_t _buf_ids;
+    tensor_t _buf_pos;
+    tensor_t _buf_hidden;
+    tensor_t _buf_h_norm;
+    tensor_t _buf_q;
+    tensor_t _buf_k;
+    tensor_t _buf_v;
+    tensor_t _buf_attn;
+    tensor_t _buf_o;
+    tensor_t _buf_h_mlp;
+    tensor_t _buf_gate;
+    tensor_t _buf_up;
+    tensor_t _buf_mlp_out;
+    tensor_t _buf_down;
+    tensor_t _buf_logits;
 };
 
 } // namespace model
