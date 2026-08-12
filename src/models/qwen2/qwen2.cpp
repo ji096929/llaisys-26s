@@ -262,7 +262,16 @@ tensor_t Qwen2Model::forward_layer(size_t layer, tensor_t hidden,
 void Qwen2Model::append_cache(tensor_t cache, tensor_t new_kv, size_t offset) {
     size_t ntoken = new_kv->shape()[0];
     auto dst = cache->slice(0, offset, offset + ntoken);
-    dst->load(new_kv->data());
+    if (cache->deviceType() == LLAISYS_DEVICE_CPU) {
+        // host 存储：直接内存拷贝
+        dst->load(new_kv->data());
+    } else {
+        // 设备存储：D2D 拷贝（Tensor::load 的 H2D 语义不适用于设备间搬运）
+        size_t bytes = dst->numel() * dst->elementSize();
+        core::context().setDevice(cache->deviceType(), cache->deviceId());
+        core::context().runtime().api()->memcpy_sync(
+            dst->data(), new_kv->data(), bytes, LLAISYS_MEMCPY_D2D);
+    }
 }
 
 } // namespace model

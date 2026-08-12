@@ -24,9 +24,11 @@ def load_shared_library():
     elif sys.platform == "win32":
         libname = "llaisys.dll"
         # Python 3.8+ 在 Windows 上不搜索 PATH，需要显式注册 CUDA 运行时目录
-        cuda_bin = os.path.join(os.environ.get("CUDA_PATH", ""), "bin")
-        if os.path.isdir(cuda_bin):
-            os.add_dll_directory(cuda_bin)
+        cuda_path = os.environ.get("CUDA_PATH", "")
+        if cuda_path:
+            cuda_bin = os.path.join(cuda_path, "bin")
+            if os.path.isdir(cuda_bin):
+                os.add_dll_directory(cuda_bin)
     elif sys.platform == "darwin":
         libname = "llaisys.dylib"
     else:
