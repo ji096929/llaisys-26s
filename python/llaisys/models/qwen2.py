@@ -121,6 +121,7 @@ class Qwen2:
                 LIB_LLAISYS.llaisysQwen2ModelInfer(self._model, arr, len(token_ids))
             )
             if next_token == self._end_token:
+                result.append(next_token)
                 break
             result.append(next_token)
             # 增量生成：只喂新 token，历史 k/v 已缓存在 C++ 侧
