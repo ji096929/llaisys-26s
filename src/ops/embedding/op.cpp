@@ -6,6 +6,9 @@
 #ifdef ENABLE_NVIDIA_API
 #include "nvidia/embedding_nvidia.hpp"
 #endif
+#ifdef ENABLE_MACA_API
+#include "maca/embedding_maca.hpp"
+#endif
 namespace llaisys::ops {
 void embedding(tensor_t out, tensor_t index, tensor_t weight) {
     CHECK_SAME_DEVICE(out, index, weight);
@@ -24,6 +27,11 @@ void embedding(tensor_t out, tensor_t index, tensor_t weight) {
     case LLAISYS_DEVICE_NVIDIA:
         return nvidia::embedding(out->data(), index->data(), weight->data(),
                                  out->dtype(), index->numel(), weight->shape()[1]);
+#endif
+#ifdef ENABLE_MACA_API
+    case LLAISYS_DEVICE_MACA:
+        return maca::embedding(out->data(), index->data(), weight->data(),
+                               out->dtype(), index->numel(), weight->shape()[1]);
 #endif
     default:
         EXCEPTION_UNSUPPORTED_DEVICE;

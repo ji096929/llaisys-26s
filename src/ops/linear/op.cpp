@@ -7,6 +7,9 @@
 #ifdef ENABLE_NVIDIA_API
 #include "nvidia/linear_nvidia.hpp"
 #endif
+#ifdef ENABLE_MACA_API
+#include "maca/linear_maca.hpp"
+#endif
 
 namespace llaisys::ops {
 void linear(tensor_t out, tensor_t in, tensor_t weight, tensor_t bias) {
@@ -47,6 +50,12 @@ void linear(tensor_t out, tensor_t in, tensor_t weight, tensor_t bias) {
         return nvidia::linear(out->data(), in->data(), weight->data(),
                               bias ? bias->data() : nullptr,
                               out->dtype(), rows, out_cols, inner);
+#endif
+#ifdef ENABLE_MACA_API
+    case LLAISYS_DEVICE_MACA:
+        return maca::linear(out->data(), in->data(), weight->data(),
+                            bias ? bias->data() : nullptr,
+                            out->dtype(), rows, out_cols, inner);
 #endif
     default:
         EXCEPTION_UNSUPPORTED_DEVICE;
