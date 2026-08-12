@@ -17,4 +17,10 @@ namespace nvidia {
 const LlaisysRuntimeAPI *getRuntimeAPI();
 }
 #endif
+
+#ifdef ENABLE_MACA_API
+namespace maca {
+const LlaisysRuntimeAPI *getRuntimeAPI();
+}
+#endif
 } // namespace llaisys::device
