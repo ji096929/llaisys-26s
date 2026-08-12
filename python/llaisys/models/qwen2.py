@@ -11,7 +11,13 @@ from ..libllaisys.qwen2 import LlaisysQwen2Meta
 
 class Qwen2:
 
-    def __init__(self, model_path, device: DeviceType = DeviceType.CPU, nlayer: int = None):
+    def __init__(
+        self,
+        model_path,
+        device: DeviceType = DeviceType.CPU,
+        nlayer: int = None,
+        max_seq: int = None,
+    ):
         model_path = Path(model_path)
 
         # 1. 读 config.json，填 LlaisysQwen2Meta
@@ -26,7 +32,9 @@ class Qwen2:
         meta.nkvh = int(cfg["num_key_value_heads"])
         meta.dh = int(cfg["hidden_size"]) // int(cfg["num_attention_heads"])
         meta.di = int(cfg["intermediate_size"])
-        meta.maxseq = int(cfg["max_position_embeddings"])
+        meta.maxseq = (
+            int(cfg["max_position_embeddings"]) if max_seq is None else int(max_seq)
+        )
         meta.voc = int(cfg["vocab_size"])
         meta.epsilon = float(cfg["rms_norm_eps"])
         meta.theta = float(cfg["rope_theta"])

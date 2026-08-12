@@ -113,6 +113,8 @@ if __name__ == "__main__":
 
     del model
     gc.collect()
+    if args.device == "nvidia":
+        torch.cuda.empty_cache()
 
     print("\n=== Answer ===\n")
     print("Tokens:")

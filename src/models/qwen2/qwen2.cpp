@@ -1,5 +1,6 @@
 #include "qwen2.hpp"
 
+#include "../../core/llaisys_core.hpp"
 #include "../../utils.hpp"
 
 #include "../../ops/embedding/op.hpp"
@@ -140,7 +141,19 @@ int64_t Qwen2Model::infer(const int64_t *token_ids, size_t ntoken) {
     auto logits = forward(token_ids, ntoken);
     // 只需要最后一个 token 的 logits
     auto last_logits = logits->slice(0, ntoken - 1, ntoken);
-    return argmax_logits(last_logits->data(), _meta.dtype, _meta.voc);
+    size_t voc = _meta.voc;
+    size_t bytes = voc * llaisys::utils::dsize(_meta.dtype);
+
+    if (logits->deviceType() == LLAISYS_DEVICE_CPU) {
+        return argmax_logits(last_logits->data(), _meta.dtype, voc);
+    }
+
+    // 设备（GPU）上：logits 在显存里，CPU 不能直接读，拷回 host 再 argmax
+    std::vector<std::byte> host_logits(bytes);
+    core::context().setDevice(logits->deviceType(), logits->deviceId());
+    core::context().runtime().api()->memcpy_sync(
+        host_logits.data(), last_logits->data(), bytes, LLAISYS_MEMCPY_D2H);
+    return argmax_logits(host_logits.data(), _meta.dtype, voc);
 }
 
 tensor_t Qwen2Model::forward(const int64_t *token_ids, size_t ntoken) {
