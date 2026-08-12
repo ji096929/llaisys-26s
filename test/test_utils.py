@@ -1,6 +1,14 @@
 import llaisys
 import torch
 
+# 参考侧关闭 TF32：沐曦 PyTorch 默认对 f32 矩阵乘使用 TF32（误差约 3e-5），
+# 而 LLAISYS 后端为严格 FP32。让 PyTorch 参考也走严格 FP32，才能公平对比。
+try:
+    torch.backends.cuda.matmul.allow_tf32 = False
+    torch.backends.cudnn.allow_tf32 = False
+except Exception:
+    pass
+
 
 def random_tensor(
     shape, dtype_name, device_name, device_id=0, scale=None, bias=None
@@ -188,6 +196,8 @@ def torch_device(device_name: str, device_id=0):
         return torch.device("cpu")
     elif device_name == "nvidia":
         return torch.device(f"cuda:{device_id}")
+    elif device_name == "maca":
+        return torch.device(f"cuda:{device_id}")
     else:
         raise ValueError(f"Unsupported device name: {device_name}")
 
@@ -197,6 +207,8 @@ def llaisys_device(device_name: str):
         return llaisys.DeviceType.CPU
     elif device_name == "nvidia":
         return llaisys.DeviceType.NVIDIA
+    elif device_name == "maca":
+        return llaisys.DeviceType.MACA
     else:
         raise ValueError(f"Unsupported device name: {device_name}")
 
@@ -206,6 +218,8 @@ def device_name(llaisys_device: llaisys.DeviceType):
         return "cpu"
     elif llaisys_device == llaisys.DeviceType.NVIDIA:
         return "nvidia"
+    elif llaisys_device == llaisys.DeviceType.MACA:
+        return "maca"
     else:
         raise ValueError(f"Unsupported llaisys device: {llaisys_device}")
 
