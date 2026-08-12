@@ -2,6 +2,7 @@
 target("llaisys")
     set_toolchains("cuda")
     add_files("../src/device/nvidia/*.cu")
+    add_files("../src/ops/*/nvidia/*.cu")
 
     add_cuflags("-arch=sm_89")
     if is_plat("windows") then
